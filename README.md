@@ -22,7 +22,17 @@ A Jellyfin music player for Linux. GTK4 UI, gapless playback, offline caching, m
 
 miniaudio is bundled.
 
-## Build
+## Install
+
+### Void Linux
+
+Available in [void](https://github.com/larsgrah/void-custom/):
+
+```
+xbps-install -R /path/to/lars-void/hostdir/binpkgs jmusic
+```
+
+### Build from source
 
 ```
 zig build run
