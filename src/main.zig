@@ -6,6 +6,8 @@ const DiskCache = @import("audio/cache.zig").DiskCache;
 const Player = @import("audio/player.zig").Player;
 const App = @import("ui/window.zig").App;
 pub const sonos = @import("sonos.zig");
+pub const discord = @import("discord.zig");
+pub const scrobble = @import("scrobble.zig");
 
 const log = std.log.scoped(.main);
 
@@ -14,6 +16,10 @@ pub const Config = struct {
     username: []const u8,
     password: []const u8,
     cache_size_mb: u32 = 512,
+    lastfm_api_key: ?[]const u8 = null,
+    lastfm_secret: ?[]const u8 = null,
+    lastfm_session_key: ?[]const u8 = null,
+    listenbrainz_token: ?[]const u8 = null,
 };
 
 fn loadConfig(allocator: std.mem.Allocator) !Config {
@@ -42,6 +48,10 @@ fn loadConfig(allocator: std.mem.Allocator) !Config {
         .username = try allocator.dupe(u8, parsed.value.username),
         .password = try allocator.dupe(u8, parsed.value.password),
         .cache_size_mb = parsed.value.cache_size_mb,
+        .lastfm_api_key = if (parsed.value.lastfm_api_key) |v| try allocator.dupe(u8, v) else null,
+        .lastfm_secret = if (parsed.value.lastfm_secret) |v| try allocator.dupe(u8, v) else null,
+        .lastfm_session_key = if (parsed.value.lastfm_session_key) |v| try allocator.dupe(u8, v) else null,
+        .listenbrainz_token = if (parsed.value.listenbrainz_token) |v| try allocator.dupe(u8, v) else null,
     };
 }
 

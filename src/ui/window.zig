@@ -25,6 +25,8 @@ pub const PREFETCH_AHEAD = 10;
 
 const main = @import("../main.zig");
 const sonos = main.sonos;
+const discord = main.discord;
+const scrobble = main.scrobble;
 
 // Re-export for tests
 const g_signal_connect = helpers.g_signal_connect;
@@ -151,6 +153,7 @@ pub const App = struct {
     settings_user: *gtk.GtkWidget = undefined,
     settings_pass: *gtk.GtkWidget = undefined,
     settings_cache: *gtk.GtkWidget = undefined,
+    settings_lb_token: *gtk.GtkWidget = undefined,
     np_art: *gtk.GtkWidget = undefined,
     np_title: *gtk.GtkWidget = undefined,
     np_artist: *gtk.GtkWidget = undefined,
@@ -182,6 +185,9 @@ pub const App = struct {
     sonos_poll_counter: u8 = 0,
     sonos_track_ended: bool = false,
     resume_seek: ?f64 = null,
+    discord_rpc: discord.RichPresence = discord.RichPresence.init(),
+    scrobbler: scrobble.Scrobbler = undefined,
+    scrobbler_initialized: bool = false,
 
     // ---------------------------------------------------------------
     // Build
@@ -383,6 +389,15 @@ pub const App = struct {
             log.err("audio init failed: {}", .{err});
             return 0;
         };
+
+        // Scrobbler
+        self.scrobbler = scrobble.Scrobbler.init(self.allocator);
+        self.scrobbler.lastfm_api_key = self.config.lastfm_api_key;
+        self.scrobbler.lastfm_secret = self.config.lastfm_secret;
+        self.scrobbler.lastfm_session = self.config.lastfm_session_key;
+        self.scrobbler.listenbrainz_token = self.config.listenbrainz_token;
+        self.scrobbler_initialized = true;
+        if (self.scrobbler.enabled()) log.info("scrobbling enabled", .{});
 
         // Sonos client for main-thread transport commands
         if (self.allocator.create(sonos.Client)) |sc| {

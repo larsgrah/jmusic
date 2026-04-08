@@ -175,6 +175,26 @@ pub fn updateNowPlaying(self: *App, track: models.BaseItem) void {
     mpris.notifyPropertyChanged("PlaybackStatus");
     mpris.notifyPropertyChanged("Metadata");
 
+    // Scrobble
+    if (self.scrobbler_initialized) {
+        const dur_secs: u32 = if (track.durationSeconds()) |d| @intFromFloat(d) else 0;
+        self.scrobbler.nowPlaying(
+            track.name,
+            track.album_artist orelse track.album orelse "",
+            track.album orelse "",
+            dur_secs,
+        );
+    }
+
+    // Discord Rich Presence
+    const dur: ?u32 = if (track.durationSeconds()) |d| @intFromFloat(d) else null;
+    self.discord_rpc.setActivity(
+        track.name,
+        track.album_artist orelse track.album orelse "",
+        track.album orelse "",
+        dur,
+    );
+
     self.refreshQueueIfVisible();
 }
 
@@ -347,15 +367,34 @@ pub fn playNext(self: *App) void {
     const queue = self.track_queue orelse return;
     if (self.queue_index + 1 < queue.len) {
         self.queue_index += 1;
-        playTrack(self, self.queue_index);
+        playQueueIndex(self);
     }
 }
 
 pub fn playPrev(self: *App) void {
     if (self.queue_index > 0) {
         self.queue_index -= 1;
-        playTrack(self, self.queue_index);
+        playQueueIndex(self);
     }
+}
+
+// Play whatever is at the current queue_index, looking up the track
+// from track_queue (not tracks). Handles shuffle correctly.
+fn playQueueIndex(self: *App) void {
+    const queue = self.track_queue orelse return;
+    if (self.queue_index >= queue.len) return;
+    const track = queue[self.queue_index];
+
+    // Find this track's index in self.tracks so playTrack works
+    const tracks = self.tracks orelse return;
+    for (tracks.items, 0..) |t, i| {
+        if (std.mem.eql(u8, t.id, track.id)) {
+            playTrack(self, i);
+            return;
+        }
+    }
+    // Track not in current tracks list (shouldn't happen normally)
+    playTrack(self, self.queue_index);
 }
 
 pub fn doTogglePause(self: *App) void {
@@ -470,11 +509,11 @@ pub fn checkTrackEnd(data: ?*anyopaque) callconv(.c) c_int {
         if (self.queue_index + 1 < queue.len) {
             self.queue_index += 1;
             _ = self.play_generation.fetchAdd(1, .release);
-            playTrack(self, self.queue_index);
+            playQueueIndex(self);
         } else if (self.repeat == .all) {
             self.queue_index = 0;
             _ = self.play_generation.fetchAdd(1, .release);
-            playTrack(self, 0);
+            playQueueIndex(self);
         } else {
             self.sonos_playing = false;
             gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), "media-playback-start-symbolic");
@@ -502,7 +541,7 @@ pub fn checkTrackEnd(data: ?*anyopaque) callconv(.c) c_int {
         if (self.repeat == .all) {
             self.queue_index = 0;
             _ = self.play_generation.fetchAdd(1, .release);
-            playTrack(self, 0);
+            playQueueIndex(self);
             return 1;
         }
         if (p.isAtEnd() and !p.hasScheduledNext()) {
@@ -520,7 +559,7 @@ pub fn checkTrackEnd(data: ?*anyopaque) callconv(.c) c_int {
         updateNowPlaying(self, track);
         preloadNextTrack(self);
     } else {
-        playTrack(self, self.queue_index);
+        playQueueIndex(self);
     }
 
     return 1;
@@ -568,6 +607,8 @@ pub fn updateProgress(data: ?*anyopaque) callconv(.c) c_int {
 
         helpers.setTimeLabel(self.time_current, pos_f + self.sonos_sub_secs);
         helpers.setTimeLabel(self.time_total, dur_f);
+
+        if (self.scrobbler_initialized) self.scrobbler.checkScrobble(self.sonos_position_secs);
         return 1;
     }
 
@@ -584,6 +625,10 @@ pub fn updateProgress(data: ?*anyopaque) callconv(.c) c_int {
 
         helpers.setTimeLabel(self.time_current, cursor);
         helpers.setTimeLabel(self.time_total, length);
+
+        if (self.scrobbler_initialized and p.state == .playing) {
+            self.scrobbler.checkScrobble(@intFromFloat(@max(0, cursor)));
+        }
     }
 
     return 1;
