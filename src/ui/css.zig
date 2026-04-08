@@ -181,7 +181,7 @@ pub fn apply() void {
         \\  min-width: 52px; min-height: 52px;
         \\}
         \\.np-art-placeholder image { color: #444; }
-        \\.np-art-frame { border-radius: 4px; min-width: 52px; min-height: 52px; }
+        \\.np-art-frame { border-radius: 4px; border: none; padding: 0; }
         \\
         \\/* Transport */
         \\.control-btn {
@@ -209,6 +209,13 @@ pub fn apply() void {
         \\.volume-scale highlight { background-color: #b3b3b3; min-height: 3px; border-radius: 2px; }
         \\.volume-scale slider { background-color: #fff; min-width: 8px; min-height: 8px; border-radius: 4px; border: none; margin: -3px 0; }
         \\.volume-scale:hover highlight { background-color: #d4a843; }
+        \\
+        \\/* Search results */
+        \\.search-row {
+        \\  background: none; border: none; border-radius: 6px; padding: 0;
+        \\  min-height: 44px;
+        \\}
+        \\.search-row:hover { background-color: rgba(255,255,255,0.06); }
         \\
         \\/* Lyrics panel */
         \\.lyrics-panel { background-color: #0a0a0a; border-right: 1px solid #1a1a1a; }

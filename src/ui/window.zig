@@ -17,6 +17,7 @@ const now_playing = @import("now_playing.zig");
 const sonos_ui = @import("sonos_ui.zig");
 const lyrics_mod = @import("lyrics.zig");
 const artists_mod = @import("artists.zig");
+const search_mod = @import("search.zig");
 pub const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.ui);
@@ -145,6 +146,10 @@ pub const App = struct {
     detail_artist: *gtk.GtkWidget = undefined,
     track_list_box: *gtk.GtkWidget = undefined,
     artist_list: *gtk.GtkWidget = undefined,
+    search_results_box: *gtk.GtkWidget = undefined,
+    search_artists: ?models.ItemList = null,
+    search_tracks: ?models.ItemList = null,
+    search_gen: u32 = 0,
     current_playlist_id: ?[]const u8 = null,
     playlist_cache: std.StringHashMap(models.ItemList) = undefined,
     playlist_cache_mutex: std.Thread.Mutex = .{},
@@ -253,6 +258,9 @@ pub const App = struct {
 
         const albums_page = self.buildAlbumsPage();
         _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), albums_page, "albums");
+
+        const search_page = search_mod.buildSearchPage(self);
+        _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), search_page, "search");
 
         const artists_page = artists_mod.buildArtistsPage(self);
         _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), artists_page, "artists");
@@ -825,7 +833,7 @@ pub const App = struct {
     pub fn navigateTo(self: *App, page: [*:0]const u8) void {
         self.navPush(page);
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq or std.mem.orderZ(u8, page, "search") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
     }
 
@@ -850,7 +858,7 @@ pub const App = struct {
         const page = self.nav_stack[@intCast(self.nav_pos)];
         self.nav_inhibit = true;
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq or std.mem.orderZ(u8, page, "search") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
         self.nav_inhibit = false;
     }
@@ -861,7 +869,7 @@ pub const App = struct {
         const page = self.nav_stack[@intCast(self.nav_pos)];
         self.nav_inhibit = true;
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq or std.mem.orderZ(u8, page, "search") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
         self.nav_inhibit = false;
     }
@@ -958,8 +966,12 @@ pub const App = struct {
         const self: *App = @ptrCast(@alignCast(data));
         const raw: [*c]const u8 = gtk.gtk_editable_get_text(@ptrCast(entry));
         const query = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
-        self.navigateTo("albums");
-        self.filterAlbums(query);
+        if (query.len == 0) {
+            self.navigateTo("home");
+            return;
+        }
+        self.navigateTo("search");
+        search_mod.runSearch(self, query);
     }
 
     fn onAlbumCardClicked(button: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {

@@ -460,6 +460,19 @@ pub const Client = struct {
         return models.parseItemList(self.allocator, body);
     }
 
+    pub fn searchTracks(self: *Client, query: []const u8, limit: u32) !models.ItemList {
+        const uid = self.user_id orelse return error.NotAuthenticated;
+        const url = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/Users/{s}/Items?IncludeItemTypes=Audio&Recursive=true&SearchTerm={s}&Limit={d}&Fields=BasicSyncInfo",
+            .{ self.base_url, uid, query, limit },
+        );
+        defer self.allocator.free(url);
+        const body = try self.request(.GET, url, null);
+        defer self.allocator.free(body);
+        return models.parseItemList(self.allocator, body);
+    }
+
     pub fn getStreamUrl(self: *Client, item_id: []const u8) ![]const u8 {
         return std.fmt.allocPrint(
             self.allocator,

@@ -165,11 +165,13 @@ pub fn updateNowPlaying(self: *App, track: models.BaseItem) void {
     helpers.setLabelText(self.np_artist, p.current_artist orelse "");
     gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), "media-playback-pause-symbolic");
 
-    if (self.current_album_idx) |idx| {
+    // Load album art - use track's album/parent ID directly
+    const art_id = track.album_id orelse track.parent_id;
+    if (art_id) |id| {
+        loadNpArt(self, id);
+    } else if (self.current_album_idx) |idx| {
         const albums = self.albums orelse return;
-        if (idx < albums.items.len) {
-            loadNpArt(self, albums.items[idx].id);
-        }
+        if (idx < albums.items.len) loadNpArt(self, albums.items[idx].id);
     }
 
     self.highlightCurrentTrack();
@@ -357,17 +359,17 @@ pub fn loadNpArt(self: *App, album_id: []const u8) void {
 
             const parent = gtk.gtk_widget_get_parent(s.app.np_art);
             if (parent != null) {
-                const picture = gtk.gtk_picture_new_for_paintable(@ptrCast(texture));
-                gtk.gtk_widget_set_size_request(picture, 52, 52);
-                gtk.gtk_picture_set_content_fit(@ptrCast(picture), gtk.GTK_CONTENT_FIT_COVER);
+                const img = gtk.gtk_image_new_from_paintable(@ptrCast(texture));
+                gtk.gtk_image_set_pixel_size(@ptrCast(img), 52);
+                gtk.gtk_widget_set_size_request(img, 52, 52);
                 const grandparent = gtk.gtk_widget_get_parent(parent);
                 if (grandparent != null) {
                     gtk.gtk_box_remove(@ptrCast(grandparent), parent);
                     const new_frame = gtk.gtk_box_new(gtk.GTK_ORIENTATION_VERTICAL, 0);
                     gtk.gtk_widget_add_css_class(new_frame, "np-art-frame");
-                    gtk.gtk_box_append(@ptrCast(new_frame), picture);
+                    gtk.gtk_box_append(@ptrCast(new_frame), img);
                     gtk.gtk_box_prepend(@ptrCast(grandparent), new_frame);
-                    s.app.np_art = picture;
+                    s.app.np_art = img;
                 }
             }
             gtk.g_object_unref(texture);
@@ -434,7 +436,16 @@ pub fn doTogglePause(self: *App) void {
     };
     gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), icon);
     mpris.notifyPropertyChanged("PlaybackStatus");
-    if (p.state == .playing) preloadNextTrack(self);
+    if (p.state == .playing) {
+        // Defer preload so it doesn't block the unpause
+        _ = gtk.g_idle_add(&deferredPreload, self);
+    }
+}
+
+fn deferredPreload(data: ?*anyopaque) callconv(.c) c_int {
+    const self: *App = @ptrCast(@alignCast(data));
+    preloadNextTrack(self);
+    return 0; // run once
 }
 
 pub fn setQueue(self: *App, items: []const models.BaseItem, start_index: usize) void {

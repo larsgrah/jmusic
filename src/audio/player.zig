@@ -70,7 +70,7 @@ pub const Player = struct {
             return;
         }
 
-        // Cold start - init from file
+        // Cold start - init from file, start immediately, then normalize
         self.sound = self.initSoundFromFile(path);
         if (self.sound == null) return;
 
@@ -82,6 +82,16 @@ pub const Player = struct {
         }
 
         self.state = .playing;
+
+        // Apply normalization after start so there's no delay
+        if (self.normalize) {
+            const gain = computeNormGain(path);
+            if (gain != 1.0) {
+                c.ma.ma_sound_set_volume(self.sound.?, gain);
+                log.info("normalization gain: {d:.2}", .{gain});
+            }
+        }
+
         log.info("playing", .{});
     }
 
@@ -89,9 +99,9 @@ pub const Player = struct {
     // Both sounds use absolute engine time, so the transition is sample-accurate.
     pub fn preloadNext(self: *Player, path: [*:0]const u8) void {
         if (!self.initialized) return;
-        // Don't schedule while paused - engine time drifts from sound cursor
         if (self.state != .playing) return;
-        self.freeNextSound();
+        // Already have a scheduled next sound
+        if (self.next_sound != null) return;
 
         const current = self.sound orelse return;
 
@@ -222,15 +232,17 @@ pub const Player = struct {
     }
 
     fn initSoundFromFile(self: *Player, path: [*:0]const u8) ?*c.ma.ma_sound {
-        return self.initSoundFromFileFlags(path, c.ma.MA_SOUND_FLAG_NO_SPATIALIZATION);
+        // Cold start - skip normalization to keep playback instant
+        return self.initSoundInner(path, c.ma.MA_SOUND_FLAG_NO_SPATIALIZATION, false);
     }
 
     fn initSoundDecoded(self: *Player, path: [*:0]const u8) ?*c.ma.ma_sound {
-        // Pre-decode entire file into memory for zero-latency start
-        return self.initSoundFromFileFlags(path, c.ma.MA_SOUND_FLAG_NO_SPATIALIZATION | c.ma.MA_SOUND_FLAG_DECODE);
+        // Pre-decode for gapless - no normalization scan here to keep it fast.
+        // The gain will be applied when advanceGapless promotes this to current.
+        return self.initSoundInner(path, c.ma.MA_SOUND_FLAG_NO_SPATIALIZATION | c.ma.MA_SOUND_FLAG_DECODE, false);
     }
 
-    fn initSoundFromFileFlags(self: *Player, path: [*:0]const u8, flags: u32) ?*c.ma.ma_sound {
+    fn initSoundInner(self: *Player, path: [*:0]const u8, flags: u32, apply_norm: bool) ?*c.ma.ma_sound {
         const sound = self.allocator.create(c.ma.ma_sound) catch return null;
 
         const result = c.ma.ma_sound_init_from_file(
@@ -247,7 +259,7 @@ pub const Player = struct {
             return null;
         }
 
-        if (self.normalize) {
+        if (apply_norm and self.normalize) {
             const gain = computeNormGain(path);
             if (gain != 1.0) {
                 c.ma.ma_sound_set_volume(sound, gain);
@@ -271,8 +283,8 @@ pub const Player = struct {
         var buf: [4096]f32 = undefined; // 2048 stereo frames
         const frames_per_read: u64 = buf.len / 2; // 2 channels
 
-        // Sample first 30s max (at 48kHz = ~1.4M frames)
-        const max_frames: u64 = 48000 * 30;
+        // Sample first 5s (at 48kHz = 240k frames) - fast enough for preload path
+        const max_frames: u64 = 48000 * 5;
         var total_read: u64 = 0;
 
         while (total_read < max_frames) {
