@@ -5,6 +5,7 @@ const models = @import("../jellyfin/models.zig");
 const bg = @import("bg.zig");
 const helpers = @import("helpers.zig");
 const art_mod = @import("art.zig");
+const artists_mod = @import("artists.zig");
 
 const log = std.log.scoped(.detail);
 const gtk = c.gtk;
@@ -35,10 +36,10 @@ pub fn buildDetailPage(self: *App) *gtk.GtkWidget {
     gtk.gtk_widget_set_valign(info, gtk.GTK_ALIGN_END);
     gtk.gtk_widget_set_hexpand(info, 1);
 
-    const type_lbl = gtk.gtk_label_new("ALBUM");
-    gtk.gtk_widget_add_css_class(type_lbl, "type-label");
-    gtk.gtk_label_set_xalign(@ptrCast(type_lbl), 0);
-    gtk.gtk_box_append(@ptrCast(info), type_lbl);
+    self.detail_type_label = gtk.gtk_label_new("ALBUM");
+    gtk.gtk_widget_add_css_class(self.detail_type_label, "type-label");
+    gtk.gtk_label_set_xalign(@ptrCast(self.detail_type_label), 0);
+    gtk.gtk_box_append(@ptrCast(info), self.detail_type_label);
 
     self.detail_title = gtk.gtk_label_new("");
     gtk.gtk_widget_add_css_class(self.detail_title, "detail-title");
@@ -47,10 +48,16 @@ pub fn buildDetailPage(self: *App) *gtk.GtkWidget {
     gtk.gtk_label_set_max_width_chars(@ptrCast(self.detail_title), 40);
     gtk.gtk_box_append(@ptrCast(info), self.detail_title);
 
+    const artist_btn = gtk.gtk_button_new();
+    gtk.gtk_button_set_has_frame(@ptrCast(artist_btn), 0);
+    gtk.gtk_widget_add_css_class(artist_btn, "detail-artist-btn");
+    gtk.gtk_widget_set_halign(artist_btn, gtk.GTK_ALIGN_START);
     self.detail_artist = gtk.gtk_label_new("");
     gtk.gtk_widget_add_css_class(self.detail_artist, "detail-artist");
     gtk.gtk_label_set_xalign(@ptrCast(self.detail_artist), 0);
-    gtk.gtk_box_append(@ptrCast(info), self.detail_artist);
+    gtk.gtk_button_set_child(@ptrCast(artist_btn), self.detail_artist);
+    _ = g_signal_connect(artist_btn, "clicked", &onArtistNameClicked, self);
+    gtk.gtk_box_append(@ptrCast(info), artist_btn);
 
     const spacer = gtk.gtk_box_new(gtk.GTK_ORIENTATION_VERTICAL, 0);
     gtk.gtk_widget_set_size_request(spacer, -1, 12);
@@ -97,8 +104,12 @@ pub fn showAlbumDetail(self: *App, album_index: usize) void {
     self.current_playlist_id = null;
     gtk.gtk_widget_set_visible(self.suggestions_box, 0);
 
+    self.detail_load_gen += 1;
+    setLabelText(self.detail_type_label, "ALBUM");
     setLabelText(self.detail_title, album.name);
     setLabelText(self.detail_artist, album.album_artist orelse "Unknown Artist");
+    self.artist_albums = null;
+    self.current_artist = null;
     gtk.gtk_picture_set_paintable(@ptrCast(self.detail_art), null);
     clearChildren(self.track_list_box, .listbox);
     self.navigateTo("detail");
@@ -121,8 +132,12 @@ pub fn showAlbumDetail(self: *App, album_index: usize) void {
 }
 
 pub fn showAlbumById(self: *App, album_id: []const u8) void {
+    self.detail_load_gen += 1;
+    setLabelText(self.detail_type_label, "ALBUM");
     setLabelText(self.detail_title, "");
     setLabelText(self.detail_artist, "");
+    self.artist_albums = null;
+    // Keep current_artist so back button can restore artist detail
     gtk.gtk_picture_set_paintable(@ptrCast(self.detail_art), null);
     self.current_album_idx = null;
     self.current_playlist_idx = null;
@@ -331,6 +346,7 @@ pub fn loadDetailAsync(self: *App, id: []const u8, is_playlist: bool) void {
         app: *App,
         id: []const u8,
         is_playlist: bool,
+        gen: u32,
         base_url: []const u8,
         token: ?[]const u8,
         user_id: ?[]const u8,
@@ -341,6 +357,7 @@ pub fn loadDetailAsync(self: *App, id: []const u8, is_playlist: bool) void {
     const ctx = self.allocator.create(Ctx) catch return;
     ctx.* = .{
         .app = self, .id = id, .is_playlist = is_playlist,
+        .gen = self.detail_load_gen,
         .base_url = self.client.base_url, .token = self.client.token,
         .user_id = self.client.user_id, .username = self.client.username,
         .password = self.client.password, .alloc = self.allocator,
@@ -374,11 +391,15 @@ fn detailLoadThread(ctx: anytype) void {
         tracks: models.ItemList,
         id: []const u8,
         is_playlist: bool,
+        gen: u32,
         alloc: std.mem.Allocator,
 
         fn apply(data: ?*anyopaque) callconv(.c) c_int {
             const self: *@This() = @ptrCast(@alignCast(data));
             defer self.alloc.destroy(self);
+
+            // Stale response - user already navigated elsewhere
+            if (!self.is_playlist and self.gen != self.app.detail_load_gen) return 0;
 
             if (self.is_playlist) {
                 if (self.app.current_playlist_id == null) return 0;
@@ -410,7 +431,7 @@ fn detailLoadThread(ctx: anytype) void {
     };
 
     const cb = ctx.alloc.create(Cb) catch return;
-    cb.* = .{ .app = ctx.app, .tracks = result, .id = ctx.id, .is_playlist = ctx.is_playlist, .alloc = ctx.alloc };
+    cb.* = .{ .app = ctx.app, .tracks = result, .id = ctx.id, .is_playlist = ctx.is_playlist, .gen = ctx.gen, .alloc = ctx.alloc };
     _ = gtk.g_idle_add(&Cb.apply, cb);
 }
 
@@ -532,9 +553,67 @@ fn onPlayAll(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
     self.playTrack(0);
 }
 
+fn onArtistNameClicked(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
+    const self: *App = @ptrCast(@alignCast(data));
+    const raw: [*c]const u8 = gtk.gtk_label_get_text(@ptrCast(self.detail_artist));
+    if (raw == null) return;
+    const artist_name = std.mem.span(@as([*:0]const u8, @ptrCast(raw)));
+    if (artist_name.len == 0) return;
+
+    // If we already have the artist list, find by name
+    if (self.artists) |list| {
+        for (list.items) |artist| {
+            if (std.mem.eql(u8, artist.name, artist_name)) {
+                artists_mod.showArtistDetail(self, artist);
+                return;
+            }
+        }
+    }
+
+    // Search for the artist by name
+    const name_copy = self.allocator.dupe(u8, artist_name) catch return;
+    bg.run(self.allocator, self.client, struct {
+        app: *App,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+        result: ?models.ItemList = null,
+
+        pub fn work(s: *@This(), client: *api.Client) void {
+            s.result = client.searchArtists(s.name, 5) catch null;
+        }
+
+        pub fn done(s: *@This()) void {
+            defer s.alloc.free(s.name);
+            if (s.result) |list| {
+                // Find exact match
+                for (list.items) |artist| {
+                    if (std.ascii.eqlIgnoreCase(artist.name, s.name)) {
+                        artists_mod.showArtistDetail(s.app, artist);
+                        return;
+                    }
+                }
+                // Fallback to first result
+                if (list.items.len > 0) {
+                    artists_mod.showArtistDetail(s.app, list.items[0]);
+                }
+            }
+        }
+    }{ .app = self, .alloc = self.allocator, .name = name_copy });
+}
+
 fn onTrackActivated(_: *gtk.GtkListBox, row: *gtk.GtkListBoxRow, data: ?*anyopaque) callconv(.c) void {
     const self: *App = @ptrCast(@alignCast(data));
     const index: usize = @intCast(gtk.gtk_list_box_row_get_index(row));
+
+    // If we're viewing an artist's albums, navigate to that album
+    if (self.artist_albums) |albums| {
+        if (index < albums.items.len) {
+            self.showAlbumById(albums.items[index].id);
+            self.artist_albums = null;
+            return;
+        }
+    }
+
     const tracks = self.tracks orelse return;
     if (index >= tracks.items.len) return;
 

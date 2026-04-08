@@ -94,7 +94,7 @@ pub const Client = struct {
         return std.fmt.bufPrint(buf, "{s}{s}", .{ base, suffix }) catch null;
     }
 
-    fn readCacheFile(allocator: std.mem.Allocator, name: []const u8, max_age_hours: u32) ?[]const u8 {
+    pub fn readCacheFile(allocator: std.mem.Allocator, name: []const u8, max_age_hours: u32) ?[]const u8 {
         var base_buf: [256]u8 = undefined;
         const base = getCacheBase(&base_buf) orelse return null;
         var path_buf: [300]u8 = undefined;
@@ -409,6 +409,54 @@ pub const Client = struct {
         const body = try self.request(.GET, url, null);
         defer self.allocator.free(body);
 
+        return models.parseItemList(self.allocator, body);
+    }
+
+    pub fn getArtists(self: *Client, limit: u32) !models.ItemList {
+        // 24h cache like albums
+        if (readCacheFile(self.allocator, "artists.json", 24)) |cached| {
+            defer self.allocator.free(cached);
+            if (models.parseItemList(self.allocator, cached)) |list| {
+                log.info("loaded {d} artists from cache", .{list.items.len});
+                return list;
+            } else |_| {}
+        }
+        const uid = self.user_id orelse return error.NotAuthenticated;
+        const url = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/Artists?UserId={s}&SortBy=SortName&Fields=BasicSyncInfo&Limit={d}",
+            .{ self.base_url, uid, limit },
+        );
+        defer self.allocator.free(url);
+        const body = try self.request(.GET, url, null);
+        defer self.allocator.free(body);
+        writeCacheFile("artists.json", body);
+        return models.parseItemList(self.allocator, body);
+    }
+
+    pub fn searchArtists(self: *Client, query: []const u8, limit: u32) !models.ItemList {
+        const uid = self.user_id orelse return error.NotAuthenticated;
+        const url = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/Artists?UserId={s}&SearchTerm={s}&Limit={d}&Fields=BasicSyncInfo",
+            .{ self.base_url, uid, query, limit },
+        );
+        defer self.allocator.free(url);
+        const body = try self.request(.GET, url, null);
+        defer self.allocator.free(body);
+        return models.parseItemList(self.allocator, body);
+    }
+
+    pub fn getArtistAlbums(self: *Client, artist_id: []const u8) !models.ItemList {
+        const uid = self.user_id orelse return error.NotAuthenticated;
+        const url = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/Users/{s}/Items?IncludeItemTypes=MusicAlbum&Recursive=true&ArtistIds={s}&SortBy=ProductionYear,SortName&SortOrder=Descending&Fields=BasicSyncInfo",
+            .{ self.base_url, uid, artist_id },
+        );
+        defer self.allocator.free(url);
+        const body = try self.request(.GET, url, null);
+        defer self.allocator.free(body);
         return models.parseItemList(self.allocator, body);
     }
 

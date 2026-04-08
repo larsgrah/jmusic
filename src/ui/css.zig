@@ -108,6 +108,8 @@ pub fn apply() void {
         \\.type-label { color: #fff; font-size: 11px; font-weight: bold; }
         \\.detail-title { color: #fff; font-size: 32px; font-weight: bold; }
         \\.detail-artist { color: #a0a0a0; font-size: 16px; margin-top: 4px; }
+        \\.detail-artist-btn { background: none; border: none; padding: 0; border-radius: 4px; }
+        \\.detail-artist-btn:hover .detail-artist { color: #d4a843; }
         \\
         \\button.play-all-btn {
         \\  background: #d4a843; color: #000; border-radius: 20px;

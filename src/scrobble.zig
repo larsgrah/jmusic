@@ -60,7 +60,7 @@ pub const Scrobbler = struct {
     // Call periodically (e.g. from progress timer). Scrobbles once at 50%.
     pub fn checkScrobble(self: *Scrobbler, position_secs: u32) void {
         if (self.scrobbled) return;
-        if (self.current_duration < 30) return; // Last.fm requires >= 30s tracks
+        if (self.current_duration < 30) return;
         if (position_secs < self.current_duration / 2) return;
 
         self.scrobbled = true;

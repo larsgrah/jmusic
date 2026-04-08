@@ -16,6 +16,7 @@ const settings = @import("settings.zig");
 const now_playing = @import("now_playing.zig");
 const sonos_ui = @import("sonos_ui.zig");
 const lyrics_mod = @import("lyrics.zig");
+const artists_mod = @import("artists.zig");
 pub const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.ui);
@@ -118,6 +119,11 @@ pub const App = struct {
     grid_art_gen: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     home_art_gen: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     deduped_albums: ?[]models.BaseItem = null,
+    artists: ?models.ItemList = null,
+    artists_loaded: bool = false,
+    artist_albums: ?models.ItemList = null,
+    current_artist: ?models.BaseItem = null,
+    detail_load_gen: u32 = 0,
 
     // Navigation
     nav_stack: [32][*:0]const u8 = undefined,
@@ -134,9 +140,11 @@ pub const App = struct {
     sidebar_playlists: *gtk.GtkWidget = undefined,
     home_box: *gtk.GtkWidget = undefined,
     detail_art: *gtk.GtkWidget = undefined,
+    detail_type_label: *gtk.GtkWidget = undefined,
     detail_title: *gtk.GtkWidget = undefined,
     detail_artist: *gtk.GtkWidget = undefined,
     track_list_box: *gtk.GtkWidget = undefined,
+    artist_list: *gtk.GtkWidget = undefined,
     current_playlist_id: ?[]const u8 = null,
     playlist_cache: std.StringHashMap(models.ItemList) = undefined,
     playlist_cache_mutex: std.Thread.Mutex = .{},
@@ -246,6 +254,9 @@ pub const App = struct {
         const albums_page = self.buildAlbumsPage();
         _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), albums_page, "albums");
 
+        const artists_page = artists_mod.buildArtistsPage(self);
+        _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), artists_page, "artists");
+
         const detail_page = detail.buildDetailPage(self);
         _ = gtk.gtk_stack_add_named(@ptrCast(self.content_stack), detail_page, "detail");
 
@@ -311,6 +322,7 @@ pub const App = struct {
             .{ .label = "Home", .cb = &onNavHome },
             .{ .label = "Search", .cb = &onNavSearch },
             .{ .label = "Albums", .cb = &onNavAlbums },
+            .{ .label = "Artists", .cb = &onNavArtists },
         };
         for (nav_items) |item| {
             const btn = gtk.gtk_button_new_with_label(item.label);
@@ -429,6 +441,16 @@ pub const App = struct {
         } else |_| {}
 
         mpris.init(self);
+
+        // Load cached data immediately so UI is populated fast
+        if (api.Client.readCacheFile(self.allocator, "albums.json", 168)) |cached| {
+            defer self.allocator.free(cached);
+            if (models.parseItemList(self.allocator, cached)) |list| {
+                self.albums = list;
+                self.filterAlbums("");
+                log.info("loaded {d} albums from cache", .{list.items.len});
+            } else |_| {}
+        }
 
         const thread = std.Thread.spawn(.{}, initThread, .{self}) catch {
             log.err("failed to spawn init thread", .{});
@@ -803,17 +825,32 @@ pub const App = struct {
     pub fn navigateTo(self: *App, page: [*:0]const u8) void {
         self.navPush(page);
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
     }
 
     fn navGoBack(self: *App) void {
         if (self.nav_pos <= 0) return;
+
+        // If viewing album opened from artist detail, go back to that artist
+        if (self.current_artist) |artist| {
+            if (self.artist_albums == null) {
+                // Don't push to nav stack - just restore artist content
+                self.nav_inhibit = true;
+                artists_mod.showArtistDetail(self, artist);
+                self.nav_inhibit = false;
+                return;
+            }
+            // On artist detail itself - clear and do normal back
+            self.current_artist = null;
+            self.artist_albums = null;
+        }
+
         self.nav_pos -= 1;
         const page = self.nav_stack[@intCast(self.nav_pos)];
         self.nav_inhibit = true;
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
         self.nav_inhibit = false;
     }
@@ -824,7 +861,7 @@ pub const App = struct {
         const page = self.nav_stack[@intCast(self.nav_pos)];
         self.nav_inhibit = true;
         gtk.gtk_stack_set_visible_child_name(@ptrCast(self.content_stack), page);
-        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq;
+        const is_browse = std.mem.orderZ(u8, page, "home") == .eq or std.mem.orderZ(u8, page, "albums") == .eq or std.mem.orderZ(u8, page, "artists") == .eq;
         gtk.gtk_widget_set_visible(self.back_btn, if (is_browse) 0 else 1);
         self.nav_inhibit = false;
     }
@@ -946,6 +983,12 @@ pub const App = struct {
     fn onNavAlbums(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
         const self: *App = @ptrCast(@alignCast(data));
         self.navigateTo("albums");
+    }
+
+    fn onNavArtists(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
+        const self: *App = @ptrCast(@alignCast(data));
+        artists_mod.loadArtists(self);
+        self.navigateTo("artists");
     }
 
     fn onProfileClicked(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
