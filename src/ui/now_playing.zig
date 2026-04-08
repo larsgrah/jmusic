@@ -4,6 +4,7 @@ const helpers = @import("helpers.zig");
 const playback = @import("playback.zig");
 const queue = @import("queue.zig");
 const sonos_ui = @import("sonos_ui.zig");
+const lyrics = @import("lyrics.zig");
 
 const gtk = c.gtk;
 const App = @import("window.zig").App;
@@ -124,11 +125,16 @@ pub fn buildNowPlayingBar(self: *App) *gtk.GtkWidget {
 
     self.volume_scale = gtk.gtk_scale_new_with_range(gtk.GTK_ORIENTATION_HORIZONTAL, 0, 1, 0.01);
     gtk.gtk_scale_set_draw_value(@ptrCast(self.volume_scale), 0);
-    gtk.gtk_range_set_value(@ptrCast(self.volume_scale), 1.0);
+    gtk.gtk_range_set_value(@ptrCast(self.volume_scale), self.config.volume orelse 1.0);
     gtk.gtk_widget_set_size_request(self.volume_scale, 80, -1);
     gtk.gtk_widget_add_css_class(self.volume_scale, "volume-scale");
     _ = g_signal_connect(self.volume_scale, "value-changed", &onVolumeChanged, self);
     gtk.gtk_box_append(@ptrCast(right), self.volume_scale);
+
+    self.lyrics_btn = gtk.gtk_button_new_from_icon_name("accessories-dictionary-symbolic");
+    gtk.gtk_widget_add_css_class(self.lyrics_btn, "control-btn");
+    _ = g_signal_connect(self.lyrics_btn, "clicked", &lyrics.onToggleLyrics, self);
+    gtk.gtk_box_append(@ptrCast(right), self.lyrics_btn);
 
     const speaker_btn = sonos_ui.buildSpeakerButton(self);
     gtk.gtk_box_append(@ptrCast(right), speaker_btn);

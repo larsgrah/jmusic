@@ -15,6 +15,7 @@ const queue_mod = @import("queue.zig");
 const settings = @import("settings.zig");
 const now_playing = @import("now_playing.zig");
 const sonos_ui = @import("sonos_ui.zig");
+const lyrics_mod = @import("lyrics.zig");
 pub const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.ui);
@@ -186,6 +187,14 @@ pub const App = struct {
     sonos_track_ended: bool = false,
     resume_seek: ?f64 = null,
     discord_rpc: discord.RichPresence = discord.RichPresence.init(),
+
+    // Lyrics
+    lyrics_revealer: *gtk.GtkWidget = undefined,
+    lyrics_scroll: *gtk.GtkWidget = undefined,
+    lyrics_list: *gtk.GtkWidget = undefined,
+    lyrics_lines: ?[]lyrics_mod.LyricLine = null,
+    lyrics_current_idx: ?usize = null,
+    lyrics_btn: *gtk.GtkWidget = undefined,
     scrobbler: scrobble.Scrobbler = undefined,
     scrobbler_initialized: bool = false,
 
@@ -252,6 +261,9 @@ pub const App = struct {
         queue_mod.buildQueuePanel(self);
         gtk.gtk_overlay_add_overlay(@ptrCast(middle), self.queue_revealer);
 
+        lyrics_mod.buildLyricsPanel(self);
+        gtk.gtk_overlay_add_overlay(@ptrCast(middle), self.lyrics_revealer);
+
         gtk.gtk_box_append(@ptrCast(right), middle);
         gtk.gtk_box_append(@ptrCast(root), right);
 
@@ -276,6 +288,7 @@ pub const App = struct {
         _ = g_signal_connect(self.back_btn, "clicked", &onBack, self);
         _ = g_signal_connect(self.play_btn, "clicked", &now_playing.onPlayPause, self);
 
+        _ = g_signal_connect(self.window, "close-request", &onWindowClose, self);
         gtk.gtk_widget_set_visible(self.window, 1);
 
         _ = gtk.g_idle_add(&initBackendIdle, self);
@@ -394,6 +407,11 @@ pub const App = struct {
             log.err("audio init failed: {}", .{err});
             return 0;
         };
+
+        // Apply saved volume to audio engine
+        if (self.config.volume) |vol| {
+            _ = c.ma.ma_engine_set_volume(&self.player.?.engine, @floatCast(vol));
+        }
 
         // Scrobbler
         self.scrobbler = scrobble.Scrobbler.init(self.allocator);
@@ -694,6 +712,15 @@ pub const App = struct {
     pub fn insertNextInQueue(self: *App, track: models.BaseItem) void { playback.insertNextInQueue(self, track); }
     pub fn rebuildQueueList(self: *App) void { queue_mod.rebuildQueueList(self); }
 
+    pub fn freeLyrics(self: *App) void {
+        if (self.lyrics_lines) |lines| {
+            for (lines) |line| self.allocator.free(line.text);
+            self.allocator.free(lines);
+            self.lyrics_lines = null;
+        }
+        self.lyrics_current_idx = null;
+    }
+
     pub fn refreshQueueIfVisible(self: *App) void {
         if (gtk.gtk_revealer_get_reveal_child(@ptrCast(self.queue_revealer)) != 0) {
             self.rebuildQueueList();
@@ -870,6 +897,12 @@ pub const App = struct {
             },
             else => return 0,
         }
+    }
+
+    fn onWindowClose(_: *gtk.GtkWidget, data: ?*anyopaque) callconv(.c) c_int {
+        const self: *App = @ptrCast(@alignCast(data));
+        settings.saveConfig(self);
+        return 0; // allow close to proceed
     }
 
     fn onMouseButton(gesture: *gtk.GtkGestureClick, _: c_int, _: f64, _: f64, data: ?*anyopaque) callconv(.c) void {

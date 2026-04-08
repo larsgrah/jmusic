@@ -208,6 +208,26 @@ pub fn apply() void {
         \\.volume-scale slider { background-color: #fff; min-width: 8px; min-height: 8px; border-radius: 4px; border: none; margin: -3px 0; }
         \\.volume-scale:hover highlight { background-color: #d4a843; }
         \\
+        \\/* Lyrics panel */
+        \\.lyrics-panel { background-color: #0a0a0a; border-right: 1px solid #1a1a1a; }
+        \\.lyrics-list { padding: 16px 20px; }
+        \\.lyrics-line {
+        \\  color: #444; font-size: 13px; font-weight: 500; padding: 6px 8px;
+        \\  border-radius: 4px;
+        \\  transition: color 0.2s;
+        \\}
+        \\.lyrics-line:hover { color: #888; background-color: rgba(255,255,255,0.04); }
+        \\.lyrics-active { color: #d4a843; font-weight: 700; }
+        \\
+        \\.speaker-btn > button {
+        \\  background: none; border: none; color: #b3b3b3;
+        \\  min-width: 32px; min-height: 32px; border-radius: 16px;
+        \\  padding: 0; outline: none; box-shadow: none;
+        \\}
+        \\.speaker-btn > button:hover { color: #fff; }
+        \\.speaker-btn.control-active > button { color: #d4a843; }
+        \\.speaker-btn.control-active > button:hover { color: #e8bc5a; }
+        \\
         \\/* Speaker picker */
         \\.speaker-popover { background-color: #1a1a1a; border: 1px solid #333; border-radius: 8px; }
         \\.speaker-row {

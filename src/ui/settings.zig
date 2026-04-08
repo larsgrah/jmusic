@@ -178,7 +178,7 @@ fn onLastfmConnect(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
     if (lastfm_status_label) |lbl| helpers.setLabelText(lbl, "Authorize in browser, then click Connect again");
 }
 
-fn saveConfig(self: *App) void {
+pub fn saveConfig(self: *App) void {
     const home = std.posix.getenv("HOME") orelse return;
     const path = std.fmt.allocPrint(self.allocator, "{s}/.config/jmusic/config.json", .{home}) catch return;
     defer self.allocator.free(path);
@@ -193,7 +193,8 @@ fn saveConfig(self: *App) void {
     var stream = std.io.fixedBufferStream(&buf);
     const w = stream.writer();
 
-    w.print("{{\"server\":\"{s}\",\"username\":\"{s}\",\"password\":\"{s}\",\"cache_size_mb\":{d}", .{ server, username, password, cache_mb }) catch return;
+    const vol = gtk.gtk_range_get_value(@ptrCast(self.volume_scale));
+    w.print("{{\"server\":\"{s}\",\"username\":\"{s}\",\"password\":\"{s}\",\"cache_size_mb\":{d},\"volume\":{d:.2}", .{ server, username, password, cache_mb, vol }) catch return;
     if (self.config.lastfm_api_key) |key| w.print(",\"lastfm_api_key\":\"{s}\"", .{key}) catch {};
     if (self.config.lastfm_secret) |sec| w.print(",\"lastfm_secret\":\"{s}\"", .{sec}) catch {};
     // Session key might be on config or scrobbler (if just authenticated)

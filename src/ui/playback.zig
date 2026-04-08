@@ -5,6 +5,7 @@ const models = @import("../jellyfin/models.zig");
 const mpris = @import("mpris.zig");
 const bg = @import("bg.zig");
 const art = @import("art.zig");
+const lyrics = @import("lyrics.zig");
 const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.playback);
@@ -174,6 +175,10 @@ pub fn updateNowPlaying(self: *App, track: models.BaseItem) void {
     self.highlightCurrentTrack();
     mpris.notifyPropertyChanged("PlaybackStatus");
     mpris.notifyPropertyChanged("Metadata");
+
+    // Lyrics
+    const dur_f64: f64 = track.durationSeconds() orelse 0;
+    lyrics.fetchLyrics(self, track.name, track.album_artist orelse track.album orelse "", dur_f64);
 
     // Scrobble
     if (self.scrobbler_initialized) {
@@ -609,6 +614,7 @@ pub fn updateProgress(data: ?*anyopaque) callconv(.c) c_int {
         helpers.setTimeLabel(self.time_total, dur_f);
 
         if (self.scrobbler_initialized) self.scrobbler.checkScrobble(self.sonos_position_secs);
+        lyrics.updateLyricsHighlight(self, pos_f + self.sonos_sub_secs);
         return 1;
     }
 
@@ -629,6 +635,7 @@ pub fn updateProgress(data: ?*anyopaque) callconv(.c) c_int {
         if (self.scrobbler_initialized and p.state == .playing) {
             self.scrobbler.checkScrobble(@intFromFloat(@max(0, cursor)));
         }
+        lyrics.updateLyricsHighlight(self, cursor);
     }
 
     return 1;

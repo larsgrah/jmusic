@@ -11,27 +11,27 @@ const App = @import("window.zig").App;
 const g_signal_connect = helpers.g_signal_connect;
 
 pub fn buildSpeakerButton(self: *App) *gtk.GtkWidget {
-    self.sonos_btn = gtk.gtk_button_new_from_icon_name("audio-speakers-symbolic");
-    gtk.gtk_widget_add_css_class(self.sonos_btn, "control-btn");
-    gtk.gtk_button_set_has_frame(@ptrCast(self.sonos_btn), 0);
+    self.sonos_btn = gtk.gtk_menu_button_new();
+    gtk.gtk_menu_button_set_icon_name(@ptrCast(self.sonos_btn), "audio-speakers-symbolic");
+    gtk.gtk_widget_add_css_class(self.sonos_btn, "speaker-btn");
 
     self.sonos_popover = gtk.gtk_popover_new();
     gtk.gtk_widget_add_css_class(self.sonos_popover, "speaker-popover");
-    gtk.gtk_widget_set_parent(self.sonos_popover, self.sonos_btn);
 
     self.sonos_list = gtk.gtk_box_new(gtk.GTK_ORIENTATION_VERTICAL, 0);
     gtk.gtk_widget_set_size_request(self.sonos_list, 220, -1);
     gtk.gtk_popover_set_child(@ptrCast(self.sonos_popover), self.sonos_list);
 
-    _ = g_signal_connect(self.sonos_btn, "clicked", &onSpeakerBtnClicked, self);
+    gtk.gtk_menu_button_set_popover(@ptrCast(self.sonos_btn), self.sonos_popover);
+
+    _ = g_signal_connect(self.sonos_popover, "show", &onPopoverShow, self);
 
     return self.sonos_btn;
 }
 
-fn onSpeakerBtnClicked(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
+fn onPopoverShow(_: *gtk.GtkWidget, data: ?*anyopaque) callconv(.c) void {
     const self: *App = @ptrCast(@alignCast(data));
     rebuildSpeakerList(self);
-    gtk.gtk_popover_popup(@ptrCast(self.sonos_popover));
 }
 
 fn rebuildSpeakerList(self: *App) void {
