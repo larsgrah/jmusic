@@ -1,9 +1,12 @@
 const std = @import("std");
 const c = @import("../c.zig");
 const Player = @import("../audio/player.zig").Player;
+const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.mpris);
 const gtk = c.gtk;
+
+const App = @import("window.zig").App;
 
 const BUS_NAME = "org.mpris.MediaPlayer2.jmusic";
 const OBJECT_PATH = "/org/mpris/MediaPlayer2";
@@ -47,25 +50,15 @@ const introspection_xml =
     \\</node>
 ;
 
-// Callbacks from the UI layer
-pub const Callbacks = struct {
-    play_pause: ?*const fn () void = null,
-    next: ?*const fn () void = null,
-    prev: ?*const fn () void = null,
-    stop: ?*const fn () void = null,
-    raise: ?*const fn () void = null,
-    quit: ?*const fn () void = null,
-};
-
 var mpris_player: ?*Player = null;
-var mpris_callbacks: Callbacks = .{};
+var mpris_app: ?*App = null;
 var mpris_connection: ?*gtk.GDBusConnection = null;
 var node_info: ?*gtk.GDBusNodeInfo = null;
 var owner_id: c_uint = 0;
 
-pub fn init(player: *Player, callbacks: Callbacks) void {
-    mpris_player = player;
-    mpris_callbacks = callbacks;
+pub fn init(app: *App) void {
+    mpris_app = app;
+    mpris_player = app.player;
 
     node_info = gtk.g_dbus_node_info_new_for_xml(introspection_xml, null);
     if (node_info == null) {
@@ -104,7 +97,6 @@ pub fn notifyPropertyChanged(prop_name: [*:0]const u8) void {
     const builder = gtk.g_variant_builder_new(gtk.g_variant_type_checked_("a{sv}"));
     if (builder == null) return;
 
-    // Build the changed property
     const val = getPlayerProperty(prop_name);
     if (val != null) {
         gtk.g_variant_builder_add(builder, "{sv}", prop_name, val);
@@ -136,33 +128,19 @@ fn onBusAcquired(connection: ?*gtk.GDBusConnection, _: [*c]const u8, _: ?*anyopa
     mpris_connection = connection;
     const ni = node_info orelse return;
 
-    // Register base interface
     const base_iface = gtk.g_dbus_node_info_lookup_interface(ni, "org.mpris.MediaPlayer2");
     if (base_iface != null) {
         const vtable = &base_vtable;
         _ = gtk.g_dbus_connection_register_object(
-            connection,
-            OBJECT_PATH,
-            base_iface,
-            vtable,
-            null,
-            null,
-            null,
+            connection, OBJECT_PATH, base_iface, vtable, null, null, null,
         );
     }
 
-    // Register player interface
     const player_iface = gtk.g_dbus_node_info_lookup_interface(ni, "org.mpris.MediaPlayer2.Player");
     if (player_iface != null) {
         const vtable = &player_vtable;
         _ = gtk.g_dbus_connection_register_object(
-            connection,
-            OBJECT_PATH,
-            player_iface,
-            vtable,
-            null,
-            null,
-            null,
+            connection, OBJECT_PATH, player_iface, vtable, null, null, null,
         );
     }
 }
@@ -178,32 +156,21 @@ const base_vtable = gtk.GDBusInterfaceVTable{
 };
 
 fn baseMethodCall(
-    _: ?*gtk.GDBusConnection,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    method: [*c]const u8,
-    _: ?*gtk.GVariant,
-    invocation: ?*gtk.GDBusMethodInvocation,
-    _: ?*anyopaque,
+    _: ?*gtk.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8,
+    method: [*c]const u8, _: ?*gtk.GVariant, invocation: ?*gtk.GDBusMethodInvocation, _: ?*anyopaque,
 ) callconv(.c) void {
     const name = std.mem.span(@as([*:0]const u8, @ptrCast(method)));
     if (std.mem.eql(u8, name, "Raise")) {
-        if (mpris_callbacks.raise) |cb| cb();
+        if (mpris_app) |app| gtk.gtk_window_present(@ptrCast(app.window));
     } else if (std.mem.eql(u8, name, "Quit")) {
-        if (mpris_callbacks.quit) |cb| cb();
+        // no-op for now
     }
     gtk.g_dbus_method_invocation_return_value(invocation, null);
 }
 
 fn baseGetProperty(
-    _: ?*gtk.GDBusConnection,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    property: [*c]const u8,
-    _: [*c][*c]gtk.GError,
-    _: ?*anyopaque,
+    _: ?*gtk.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8,
+    property: [*c]const u8, _: [*c][*c]gtk.GError, _: ?*anyopaque,
 ) callconv(.c) ?*gtk.GVariant {
     const name = std.mem.span(@as([*:0]const u8, @ptrCast(property)));
     if (std.mem.eql(u8, name, "CanQuit")) return gtk.g_variant_new_boolean(1);
@@ -232,25 +199,29 @@ const player_vtable = gtk.GDBusInterfaceVTable{
 };
 
 fn playerMethodCall(
-    _: ?*gtk.GDBusConnection,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    method: [*c]const u8,
-    _: ?*gtk.GVariant,
-    invocation: ?*gtk.GDBusMethodInvocation,
-    _: ?*anyopaque,
+    _: ?*gtk.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8,
+    method: [*c]const u8, _: ?*gtk.GVariant, invocation: ?*gtk.GDBusMethodInvocation, _: ?*anyopaque,
 ) callconv(.c) void {
     const name = std.mem.span(@as([*:0]const u8, @ptrCast(method)));
+    const app = mpris_app orelse {
+        gtk.g_dbus_method_invocation_return_value(invocation, null);
+        return;
+    };
 
     if (std.mem.eql(u8, name, "PlayPause") or std.mem.eql(u8, name, "Play") or std.mem.eql(u8, name, "Pause")) {
-        if (mpris_callbacks.play_pause) |cb| cb();
+        app.doTogglePause();
     } else if (std.mem.eql(u8, name, "Next")) {
-        if (mpris_callbacks.next) |cb| cb();
+        app.playNext();
     } else if (std.mem.eql(u8, name, "Previous")) {
-        if (mpris_callbacks.prev) |cb| cb();
+        app.playPrev();
     } else if (std.mem.eql(u8, name, "Stop")) {
-        if (mpris_callbacks.stop) |cb| cb();
+        if (app.player) |p| {
+            p.stop();
+            helpers.setLabelText(app.np_title, "Nothing playing");
+            helpers.setLabelText(app.np_artist, "");
+            gtk.gtk_button_set_icon_name(@ptrCast(app.play_btn), "media-playback-start-symbolic");
+            notifyPropertyChanged("PlaybackStatus");
+        }
     }
 
     gtk.g_dbus_method_invocation_return_value(invocation, null);
@@ -288,13 +259,8 @@ fn getPlayerProperty(property: [*:0]const u8) ?*gtk.GVariant {
 }
 
 fn playerGetProperty(
-    _: ?*gtk.GDBusConnection,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    _: [*c]const u8,
-    property: [*c]const u8,
-    _: [*c][*c]gtk.GError,
-    _: ?*anyopaque,
+    _: ?*gtk.GDBusConnection, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8,
+    property: [*c]const u8, _: [*c][*c]gtk.GError, _: ?*anyopaque,
 ) callconv(.c) ?*gtk.GVariant {
     return getPlayerProperty(@ptrCast(property));
 }
@@ -303,11 +269,9 @@ fn buildMetadata(player: *Player) ?*gtk.GVariant {
     const builder = gtk.g_variant_builder_new(gtk.g_variant_type_checked_("a{sv}"));
     if (builder == null) return null;
 
-    // Track ID (required)
     gtk.g_variant_builder_add(builder, "{sv}", "mpris:trackid",
         gtk.g_variant_new_object_path("/org/mpris/MediaPlayer2/Track/1"));
 
-    // Title
     if (player.current_track_name) |title| {
         var buf: [256]u8 = undefined;
         const len = @min(title.len, buf.len - 1);
@@ -317,7 +281,6 @@ fn buildMetadata(player: *Player) ?*gtk.GVariant {
             gtk.g_variant_new_string(@ptrCast(&buf)));
     }
 
-    // Artist (as string array)
     if (player.current_artist) |artist| {
         var buf: [256]u8 = undefined;
         const len = @min(artist.len, buf.len - 1);
@@ -331,7 +294,6 @@ fn buildMetadata(player: *Player) ?*gtk.GVariant {
             gtk.g_variant_new_strv(arr, 1));
     }
 
-    // Album
     if (player.current_album) |album| {
         var buf: [256]u8 = undefined;
         const len = @min(album.len, buf.len - 1);
@@ -341,7 +303,6 @@ fn buildMetadata(player: *Player) ?*gtk.GVariant {
             gtk.g_variant_new_string(@ptrCast(&buf)));
     }
 
-    // Length in microseconds
     const length_us: i64 = @intFromFloat(player.getLengthSeconds() * 1_000_000);
     gtk.g_variant_builder_add(builder, "{sv}", "mpris:length",
         gtk.g_variant_new_int64(length_us));
