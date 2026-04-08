@@ -5,6 +5,7 @@ const models = @import("jellyfin/models.zig");
 const DiskCache = @import("audio/cache.zig").DiskCache;
 const Player = @import("audio/player.zig").Player;
 const App = @import("ui/window.zig").App;
+pub const sonos = @import("sonos.zig");
 
 const log = std.log.scoped(.main);
 

@@ -430,3 +430,35 @@ test "Player State enum values" {
     try testing.expect(player_mod.State.stopped != player_mod.State.playing);
     try testing.expect(player_mod.State.playing != player_mod.State.paused);
 }
+
+// ---------------------------------------------------------------
+// Sonos
+// ---------------------------------------------------------------
+const sonos = @import("sonos.zig");
+
+test "sonos discover finds speakers" {
+    var client = sonos.Client.init(testing.allocator);
+    defer client.deinit();
+    var speakers: [sonos.max_speakers]sonos.Speaker = undefined;
+    const count = client.discover(&speakers);
+    try testing.expect(count > 0);
+
+    // Each speaker should have room name and IP
+    for (speakers[0..count]) |s| {
+        try testing.expect(s.ip_len > 0);
+        try testing.expect(s.room_len > 0);
+        std.debug.print("  {s} ({s}) @ {s}\n", .{ s.room(), s.model(), s.ip() });
+    }
+}
+
+test "sonos get volume" {
+    var client = sonos.Client.init(testing.allocator);
+    defer client.deinit();
+    var speakers: [sonos.max_speakers]sonos.Speaker = undefined;
+    const count = client.discover(&speakers);
+    if (count == 0) return error.SkipZigTest;
+
+    const vol = try client.getVolume(speakers[0].ip());
+    try testing.expect(vol <= 100);
+    std.debug.print("  {s} volume: {d}\n", .{ speakers[0].room(), vol });
+}

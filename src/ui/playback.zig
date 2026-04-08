@@ -17,18 +17,45 @@ pub fn playTrack(self: *App, index: usize) void {
     const tracks = self.tracks orelse return;
     if (index >= tracks.items.len) return;
     const track = tracks.items[index];
-    const p = self.player orelse return;
 
     // Bump generation to cancel stale async downloads
     _ = self.play_generation.fetchAdd(1, .release);
-    const gen = self.play_generation.load(.acquire);
 
     self.playing_album_idx = self.current_album_idx;
     self.playing_playlist_id = self.current_playlist_id;
 
+    // Sonos mode: send stream URL directly to speaker
+    if (self.sonos_active) |active_idx| {
+        const sc = self.sonos_client orelse return;
+        const stream_url = self.client.getStreamUrl(track.id) catch return;
+        defer self.allocator.free(stream_url);
+        const ip = self.sonos_speakers[active_idx].ip();
+        sc.setTransportUri(ip, stream_url, track.name, track.album_artist orelse track.album orelse "") catch return;
+        sc.play(ip) catch return;
+        self.sonos_playing = true;
+        self.sonos_track_ended = false;
+        self.sonos_position_secs = 0;
+        // Use Jellyfin metadata for duration since Sonos reports 0 for streams
+        self.sonos_duration_secs = if (track.durationSeconds()) |d| @intFromFloat(d) else 0;
+        self.sonos_sub_secs = 0;
+        self.sonos_poll_counter = 0;
+        updateNowPlaying(self, track);
+        gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), "media-playback-pause-symbolic");
+        mpris.notifyPropertyChanged("PlaybackStatus");
+        mpris.notifyPropertyChanged("Metadata");
+        return;
+    }
+
+    const p = self.player orelse return;
+    const gen = self.play_generation.load(.acquire);
+
     if (self.audio_cache.findSlot(track.id)) |slot| {
         var buf: [64]u8 = undefined;
         p.playFile(AudioCache.tempPath(&buf, slot));
+        if (self.resume_seek) |frac| {
+            self.resume_seek = null;
+            p.seek(frac);
+        }
         updateNowPlaying(self, track);
         prefetchAhead(self, index);
         preloadNextTrack(self);
@@ -46,6 +73,10 @@ pub fn playTrack(self: *App, index: usize) void {
         self.audio_cache.markReady(slot, track.id);
         var pbuf: [64]u8 = undefined;
         p.playFile(AudioCache.tempPath(&pbuf, slot));
+        if (self.resume_seek) |frac| {
+            self.resume_seek = null;
+            p.seek(frac);
+        }
         updateNowPlaying(self, track);
         prefetchAhead(self, index);
         preloadNextTrack(self);
@@ -101,6 +132,10 @@ pub fn startAsyncDownload(self: *App, track: models.BaseItem, gen: u32, index: u
             const p2 = s.app.player orelse return;
             var z_buf: [64]u8 = undefined;
             p2.playFile(AudioCache.tempPath(&z_buf, s.slot));
+            if (s.app.resume_seek) |frac| {
+                s.app.resume_seek = null;
+                p2.seek(frac);
+            }
             p2.current_track_name = s.track_name;
             p2.current_artist = s.track_artist;
             p2.current_album = s.track_album;
@@ -324,6 +359,22 @@ pub fn playPrev(self: *App) void {
 }
 
 pub fn doTogglePause(self: *App) void {
+    if (self.sonos_active) |idx| {
+        const sc = self.sonos_client orelse return;
+        const ip = self.sonos_speakers[idx].ip();
+        if (self.sonos_playing) {
+            sc.pause(ip) catch {};
+            self.sonos_playing = false;
+        } else {
+            sc.play(ip) catch {};
+            self.sonos_playing = true;
+        }
+        const icon: [*:0]const u8 = if (self.sonos_playing) "media-playback-pause-symbolic" else "media-playback-start-symbolic";
+        gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), icon);
+        mpris.notifyPropertyChanged("PlaybackStatus");
+        return;
+    }
+
     const p = self.player orelse return;
     p.togglePause();
     const icon = switch (p.state) {
@@ -398,6 +449,40 @@ pub fn insertNextInQueue(self: *App, track: models.BaseItem) void {
 
 pub fn checkTrackEnd(data: ?*anyopaque) callconv(.c) c_int {
     const self: *App = @ptrCast(@alignCast(data));
+
+    // Sonos track end detection (set by transport state poll in updateProgress)
+    if (self.sonos_active != null) {
+        if (!self.sonos_track_ended) return 1;
+        self.sonos_track_ended = false;
+
+        const queue = self.track_queue orelse return 1;
+        if (self.repeat == .one) {
+            self.sonos_position_secs = 0;
+            self.sonos_sub_secs = 0;
+            if (self.sonos_active) |idx| {
+                if (self.sonos_client) |sc| {
+                    sc.seek(self.sonos_speakers[idx].ip(), 0) catch {};
+                    sc.play(self.sonos_speakers[idx].ip()) catch {};
+                }
+            }
+            return 1;
+        }
+        if (self.queue_index + 1 < queue.len) {
+            self.queue_index += 1;
+            _ = self.play_generation.fetchAdd(1, .release);
+            playTrack(self, self.queue_index);
+        } else if (self.repeat == .all) {
+            self.queue_index = 0;
+            _ = self.play_generation.fetchAdd(1, .release);
+            playTrack(self, 0);
+        } else {
+            self.sonos_playing = false;
+            gtk.gtk_button_set_icon_name(@ptrCast(self.play_btn), "media-playback-start-symbolic");
+            mpris.notifyPropertyChanged("PlaybackStatus");
+        }
+        return 1;
+    }
+
     const p = self.player orelse return 1;
     if (p.state != .playing) return 1;
 
@@ -443,6 +528,49 @@ pub fn checkTrackEnd(data: ?*anyopaque) callconv(.c) c_int {
 
 pub fn updateProgress(data: ?*anyopaque) callconv(.c) c_int {
     const self: *App = @ptrCast(@alignCast(data));
+
+    // Sonos progress polling
+    if (self.sonos_active) |idx| {
+        if (!self.sonos_playing) return 1;
+
+        // Interpolate between polls (add 0.25s per 250ms tick)
+        self.sonos_sub_secs += 0.25;
+        if (self.sonos_sub_secs >= 1.0) {
+            self.sonos_sub_secs -= 1.0;
+            self.sonos_position_secs += 1;
+        }
+
+        // Poll Sonos every ~1 second (every 4th tick)
+        self.sonos_poll_counter += 1;
+        if (self.sonos_poll_counter >= 4) {
+            self.sonos_poll_counter = 0;
+            if (self.sonos_client) |sc| {
+                if (sc.getPositionInfo(self.sonos_speakers[idx].ip())) |pos| {
+                    self.sonos_position_secs = pos.position_secs;
+                    // Sonos reports 0 duration for HTTP streams - keep Jellyfin value
+                    if (pos.duration_secs > 0) self.sonos_duration_secs = pos.duration_secs;
+                    self.sonos_sub_secs = 0;
+                    // Detect track end via transport state
+                    if (pos.transport_state == .stopped and self.sonos_playing) {
+                        self.sonos_track_ended = true;
+                    }
+                } else |_| {}
+            }
+        }
+
+        const pos_f: f32 = @floatFromInt(self.sonos_position_secs);
+        const dur_f: f32 = @floatFromInt(self.sonos_duration_secs);
+        const frac: f64 = if (dur_f > 0) @as(f64, pos_f + self.sonos_sub_secs) / @as(f64, dur_f) else 0;
+
+        self.updating_progress = true;
+        gtk.gtk_range_set_value(@ptrCast(self.progress_scale), frac);
+        self.updating_progress = false;
+
+        helpers.setTimeLabel(self.time_current, pos_f + self.sonos_sub_secs);
+        helpers.setTimeLabel(self.time_total, dur_f);
+        return 1;
+    }
+
     const p = self.player orelse return 1;
 
     if (p.state == .playing or p.state == .paused) {

@@ -229,9 +229,13 @@ fn playerMethodCall(
 
 fn getPlayerProperty(property: [*:0]const u8) ?*gtk.GVariant {
     const name = std.mem.span(property);
+    const app = mpris_app orelse return null;
     const player = mpris_player orelse return null;
 
     if (std.mem.eql(u8, name, "PlaybackStatus")) {
+        if (app.sonos_active != null) {
+            return gtk.g_variant_new_string(if (app.sonos_playing) "Playing" else "Paused");
+        }
         return gtk.g_variant_new_string(switch (player.state) {
             .playing => "Playing",
             .paused => "Paused",
@@ -249,10 +253,17 @@ fn getPlayerProperty(property: [*:0]const u8) ?*gtk.GVariant {
     if (std.mem.eql(u8, name, "MaximumRate")) return gtk.g_variant_new_double(1.0);
     if (std.mem.eql(u8, name, "Volume")) return gtk.g_variant_new_double(1.0);
     if (std.mem.eql(u8, name, "Position")) {
+        if (app.sonos_active != null) {
+            const pos_us: i64 = @as(i64, app.sonos_position_secs) * 1_000_000;
+            return gtk.g_variant_new_int64(pos_us);
+        }
         const pos_us: i64 = @intFromFloat(player.getCursorSeconds() * 1_000_000);
         return gtk.g_variant_new_int64(pos_us);
     }
     if (std.mem.eql(u8, name, "Metadata")) {
+        if (app.sonos_active != null) {
+            return buildMetadataSonos(app, player);
+        }
         return buildMetadata(player);
     }
     return null;
@@ -263,6 +274,52 @@ fn playerGetProperty(
     property: [*c]const u8, _: [*c][*c]gtk.GError, _: ?*anyopaque,
 ) callconv(.c) ?*gtk.GVariant {
     return getPlayerProperty(@ptrCast(property));
+}
+
+fn buildMetadataSonos(app: *App, player: *Player) ?*gtk.GVariant {
+    const builder = gtk.g_variant_builder_new(gtk.g_variant_type_checked_("a{sv}"));
+    if (builder == null) return null;
+
+    gtk.g_variant_builder_add(builder, "{sv}", "mpris:trackid",
+        gtk.g_variant_new_object_path("/org/mpris/MediaPlayer2/Track/1"));
+
+    // Track info is still on the player struct
+    if (player.current_track_name) |title| {
+        var buf: [256]u8 = undefined;
+        const len = @min(title.len, buf.len - 1);
+        @memcpy(buf[0..len], title[0..len]);
+        buf[len] = 0;
+        gtk.g_variant_builder_add(builder, "{sv}", "xesam:title",
+            gtk.g_variant_new_string(@ptrCast(&buf)));
+    }
+
+    if (player.current_artist) |artist| {
+        var buf: [256]u8 = undefined;
+        const len = @min(artist.len, buf.len - 1);
+        @memcpy(buf[0..len], artist[0..len]);
+        buf[len] = 0;
+        const arr: [*c]const [*c]const u8 = @ptrCast(&[_:null]?[*:0]const u8{
+            @ptrCast(&buf),
+            null,
+        });
+        gtk.g_variant_builder_add(builder, "{sv}", "xesam:artist",
+            gtk.g_variant_new_strv(arr, 1));
+    }
+
+    if (player.current_album) |album| {
+        var buf: [256]u8 = undefined;
+        const len = @min(album.len, buf.len - 1);
+        @memcpy(buf[0..len], album[0..len]);
+        buf[len] = 0;
+        gtk.g_variant_builder_add(builder, "{sv}", "xesam:album",
+            gtk.g_variant_new_string(@ptrCast(&buf)));
+    }
+
+    const length_us: i64 = @as(i64, app.sonos_duration_secs) * 1_000_000;
+    gtk.g_variant_builder_add(builder, "{sv}", "mpris:length",
+        gtk.g_variant_new_int64(length_us));
+
+    return gtk.g_variant_builder_end(builder);
 }
 
 fn buildMetadata(player: *Player) ?*gtk.GVariant {

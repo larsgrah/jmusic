@@ -14,6 +14,7 @@ const detail = @import("detail.zig");
 const queue_mod = @import("queue.zig");
 const settings = @import("settings.zig");
 const now_playing = @import("now_playing.zig");
+const sonos_ui = @import("sonos_ui.zig");
 pub const helpers = @import("helpers.zig");
 
 const log = std.log.scoped(.ui);
@@ -23,6 +24,7 @@ const MAX_GRID_ITEMS = 60;
 pub const PREFETCH_AHEAD = 10;
 
 const main = @import("../main.zig");
+const sonos = main.sonos;
 
 // Re-export for tests
 const g_signal_connect = helpers.g_signal_connect;
@@ -162,6 +164,24 @@ pub const App = struct {
     shuffle: bool = false,
     repeat: RepeatMode = .off,
     updating_progress: bool = false,
+    updating_volume: bool = false,
+
+    // Sonos
+    sonos_client: ?*sonos.Client = null,
+    sonos_speakers: [sonos.max_speakers]sonos.Speaker = undefined,
+    sonos_speaker_count: u8 = 0,
+    sonos_active: ?u8 = null,
+    sonos_grouped: [sonos.max_speakers]bool = [_]bool{false} ** sonos.max_speakers,
+    sonos_btn: *gtk.GtkWidget = undefined,
+    sonos_popover: *gtk.GtkWidget = undefined,
+    sonos_list: *gtk.GtkWidget = undefined,
+    sonos_playing: bool = false,
+    sonos_position_secs: u32 = 0,
+    sonos_duration_secs: u32 = 0,
+    sonos_sub_secs: f32 = 0,
+    sonos_poll_counter: u8 = 0,
+    sonos_track_ended: bool = false,
+    resume_seek: ?f64 = null,
 
     // ---------------------------------------------------------------
     // Build
@@ -364,6 +384,12 @@ pub const App = struct {
             return 0;
         };
 
+        // Sonos client for main-thread transport commands
+        if (self.allocator.create(sonos.Client)) |sc| {
+            sc.* = sonos.Client.init(self.allocator);
+            self.sonos_client = sc;
+        } else |_| {}
+
         mpris.init(self);
 
         const thread = std.Thread.spawn(.{}, initThread, .{self}) catch {
@@ -425,6 +451,9 @@ pub const App = struct {
         _ = gtk.g_idle_add(&onAlbumsReady, self);
 
         _ = bg_client.fetchAndCacheAlbums() catch {};
+
+        // Discover Sonos speakers on the network
+        sonos_ui.startDiscovery(self);
     }
 
     fn onHomeReady(data: ?*anyopaque) callconv(.c) c_int {

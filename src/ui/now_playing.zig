@@ -3,6 +3,7 @@ const c = @import("../c.zig");
 const helpers = @import("helpers.zig");
 const playback = @import("playback.zig");
 const queue = @import("queue.zig");
+const sonos_ui = @import("sonos_ui.zig");
 
 const gtk = c.gtk;
 const App = @import("window.zig").App;
@@ -129,6 +130,9 @@ pub fn buildNowPlayingBar(self: *App) *gtk.GtkWidget {
     _ = g_signal_connect(self.volume_scale, "value-changed", &onVolumeChanged, self);
     gtk.gtk_box_append(@ptrCast(right), self.volume_scale);
 
+    const speaker_btn = sonos_ui.buildSpeakerButton(self);
+    gtk.gtk_box_append(@ptrCast(right), speaker_btn);
+
     self.queue_btn = gtk.gtk_button_new_from_icon_name("view-list-symbolic");
     gtk.gtk_widget_add_css_class(self.queue_btn, "control-btn");
     _ = g_signal_connect(self.queue_btn, "clicked", &queue.onToggleQueue, self);
@@ -167,8 +171,19 @@ fn onPrev(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
 fn onProgressChanged(_: *gtk.GtkRange, data: ?*anyopaque) callconv(.c) void {
     const self: *App = @ptrCast(@alignCast(data));
     if (self.updating_progress) return;
-    const p = self.player orelse return;
     const val = gtk.gtk_range_get_value(@ptrCast(self.progress_scale));
+
+    if (self.sonos_active) |idx| {
+        const secs: u32 = @intFromFloat(val * @as(f64, @floatFromInt(self.sonos_duration_secs)));
+        if (self.sonos_client) |sc| {
+            sc.seek(self.sonos_speakers[idx].ip(), secs) catch {};
+        }
+        self.sonos_position_secs = secs;
+        self.sonos_sub_secs = 0;
+        return;
+    }
+
+    const p = self.player orelse return;
     p.seek(val);
     playback.preloadNextTrack(self);
 }
@@ -211,10 +226,19 @@ fn onRepeatToggle(_: *gtk.GtkButton, data: ?*anyopaque) callconv(.c) void {
 
 fn onVolumeChanged(_: *gtk.GtkRange, data: ?*anyopaque) callconv(.c) void {
     const self: *App = @ptrCast(@alignCast(data));
-    const p = self.player orelse return;
-    if (!p.initialized) return;
-    const vol: f32 = @floatCast(gtk.gtk_range_get_value(@ptrCast(self.volume_scale)));
-    _ = c.ma.ma_engine_set_volume(&p.engine, vol);
+    if (self.updating_volume) return;
+    const vol: f64 = gtk.gtk_range_get_value(@ptrCast(self.volume_scale));
+
+    if (self.sonos_active) |idx| {
+        const sonos_vol: u8 = @intFromFloat(@min(100.0, vol * 100));
+        if (self.sonos_client) |sc| {
+            sc.setVolume(self.sonos_speakers[idx].ip(), sonos_vol) catch {};
+        }
+    } else {
+        const p = self.player orelse return;
+        if (!p.initialized) return;
+        _ = c.ma.ma_engine_set_volume(&p.engine, @floatCast(vol));
+    }
 
     const icon = if (vol < 0.01)
         "audio-volume-muted-symbolic"
