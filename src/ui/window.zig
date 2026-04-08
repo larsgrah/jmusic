@@ -265,6 +265,11 @@ pub const App = struct {
         _ = g_signal_connect(@as(*anyopaque, @ptrCast(click)), "pressed", &onMouseButton, self);
         gtk.gtk_widget_add_controller(self.window, @ptrCast(click));
 
+        // Keyboard shortcuts
+        const key_ctrl = gtk.gtk_event_controller_key_new();
+        _ = g_signal_connect(@as(*anyopaque, @ptrCast(key_ctrl)), "key-pressed", &onKeyPressed, self);
+        gtk.gtk_widget_add_controller(self.window, @ptrCast(key_ctrl));
+
         self.navPush("home");
 
         _ = g_signal_connect(self.search_entry, "search-changed", &onSearchChanged, self);
@@ -800,6 +805,73 @@ pub const App = struct {
     // ---------------------------------------------------------------
     // Signal handlers (nav + search)
     // ---------------------------------------------------------------
+    fn onKeyPressed(_: *gtk.GtkEventControllerKey, keyval: c_uint, _: c_uint, state: c_uint, data: ?*anyopaque) callconv(.c) c_int {
+        const self: *App = @ptrCast(@alignCast(data));
+        const ctrl = (state & gtk.GDK_CONTROL_MASK) != 0;
+
+        switch (keyval) {
+            gtk.GDK_KEY_space => {
+                // Don't capture space when search entry is focused
+                if (gtk.gtk_widget_has_focus(self.search_entry) != 0) return 0;
+                self.doTogglePause();
+                return 1;
+            },
+            gtk.GDK_KEY_Left => {
+                if (ctrl) {
+                    self.playPrev();
+                } else {
+                    // Seek back 5s
+                    if (self.sonos_active) |idx| {
+                        const pos = if (self.sonos_position_secs > 5) self.sonos_position_secs - 5 else 0;
+                        if (self.sonos_client) |sc| sc.seek(self.sonos_speakers[idx].ip(), pos) catch {};
+                        self.sonos_position_secs = pos;
+                        self.sonos_sub_secs = 0;
+                    } else if (self.player) |p| {
+                        const len = p.getLengthSeconds();
+                        if (len > 0) {
+                            const cur = p.getCursorSeconds();
+                            const target = if (cur > 5) cur - 5 else 0;
+                            p.seek(@as(f64, target) / @as(f64, len));
+                        }
+                    }
+                }
+                return 1;
+            },
+            gtk.GDK_KEY_Right => {
+                if (ctrl) {
+                    self.playNext();
+                } else {
+                    // Seek forward 5s
+                    if (self.sonos_active) |idx| {
+                        const pos = self.sonos_position_secs + 5;
+                        if (self.sonos_client) |sc| sc.seek(self.sonos_speakers[idx].ip(), pos) catch {};
+                        self.sonos_position_secs = pos;
+                        self.sonos_sub_secs = 0;
+                    } else if (self.player) |p| {
+                        const len = p.getLengthSeconds();
+                        if (len > 0) {
+                            const cur = p.getCursorSeconds();
+                            const target = @min(cur + 5, len);
+                            p.seek(@as(f64, target) / @as(f64, len));
+                        }
+                    }
+                }
+                return 1;
+            },
+            gtk.GDK_KEY_plus, gtk.GDK_KEY_equal => {
+                const vol = gtk.gtk_range_get_value(@ptrCast(self.volume_scale));
+                gtk.gtk_range_set_value(@ptrCast(self.volume_scale), @min(1.0, vol + 0.05));
+                return 1;
+            },
+            gtk.GDK_KEY_minus => {
+                const vol = gtk.gtk_range_get_value(@ptrCast(self.volume_scale));
+                gtk.gtk_range_set_value(@ptrCast(self.volume_scale), @max(0.0, vol - 0.05));
+                return 1;
+            },
+            else => return 0,
+        }
+    }
+
     fn onMouseButton(gesture: *gtk.GtkGestureClick, _: c_int, _: f64, _: f64, data: ?*anyopaque) callconv(.c) void {
         const self: *App = @ptrCast(@alignCast(data));
         const btn = gtk.gtk_gesture_single_get_current_button(@ptrCast(gesture));
