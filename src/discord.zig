@@ -16,12 +16,12 @@ pub const RichPresence = struct {
         self.disconnect();
     }
 
-    pub fn setActivity(self: *RichPresence, track: []const u8, artist: []const u8, album: []const u8, duration_secs: ?u32) void {
+    pub fn setActivity(self: *RichPresence, track: []const u8, artist: []const u8, album: []const u8, image_url: ?[]const u8, duration_secs: ?u32) void {
         if (self.socket == null) self.connect();
         if (self.socket == null) return;
 
         self.nonce += 1;
-        var buf: [1024]u8 = undefined;
+        var buf: [2048]u8 = undefined;
         var stream = std.io.fixedBufferStream(&buf);
         const w = stream.writer();
 
@@ -46,8 +46,16 @@ pub const RichPresence = struct {
             \\"{s},"assets":{{"large_text":"
         , .{ts}) catch return;
         jsonEscape(w, album) catch return;
+        w.writeAll(
+            \\","large_image":"
+        ) catch return;
+        if (image_url) |url| {
+            jsonEscape(w, url) catch return;
+        } else {
+            w.writeAll("jmusic") catch return;
+        }
         w.print(
-            \\","large_image":"jmusic"}},"type":2}}}},"nonce":"{d}"}}
+            \\"}},"type":2}}}},"nonce":"{d}"}}
         , .{self.nonce}) catch return;
 
         const payload = stream.getWritten();

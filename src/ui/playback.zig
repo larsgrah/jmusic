@@ -193,10 +193,17 @@ pub fn updateNowPlaying(self: *App, track: models.BaseItem) void {
 
     // Discord Rich Presence
     const dur: ?u32 = if (track.durationSeconds()) |d| @intFromFloat(d) else null;
+    const album_id = track.album_id orelse track.parent_id;
+    var img_url_buf: [256]u8 = undefined;
+    const img_url: ?[]const u8 = if (album_id) |aid|
+        std.fmt.bufPrint(&img_url_buf, "{s}/Items/{s}/Images/Primary?maxWidth=256", .{ self.client.base_url, aid }) catch null
+    else
+        null;
     self.discord_rpc.setActivity(
         track.name,
         track.album_artist orelse track.album orelse "",
         track.album orelse "",
+        img_url,
         dur,
     );
 
