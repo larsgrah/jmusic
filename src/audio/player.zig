@@ -16,6 +16,7 @@ pub const Player = struct {
     next_sound: ?*c.ma.ma_sound = null,
     state: State = .stopped,
     initialized: bool = false,
+    normalize: bool = true,
 
     current_track_name: ?[]const u8 = null,
     current_artist: ?[]const u8 = null,
@@ -245,7 +246,51 @@ pub const Player = struct {
             self.allocator.destroy(sound);
             return null;
         }
+
+        if (self.normalize) {
+            const gain = computeNormGain(path);
+            if (gain != 1.0) {
+                c.ma.ma_sound_set_volume(sound, gain);
+                log.info("normalization gain: {d:.2}", .{gain});
+            }
+        }
+
         return sound;
+    }
+
+    // Scan file for peak amplitude and compute gain to normalize to target level.
+    // Uses a separate decoder to avoid interfering with playback.
+    fn computeNormGain(path: [*:0]const u8) f32 {
+        const target_peak: f32 = 0.5; // ~-6dB, leaves headroom
+
+        var decoder: c.ma.ma_decoder = undefined;
+        if (c.ma.ma_decoder_init_file(path, null, &decoder) != c.ma.MA_SUCCESS) return 1.0;
+        defer _ = c.ma.ma_decoder_uninit(&decoder);
+
+        var peak: f32 = 0.0;
+        var buf: [4096]f32 = undefined; // 2048 stereo frames
+        const frames_per_read: u64 = buf.len / 2; // 2 channels
+
+        // Sample first 30s max (at 48kHz = ~1.4M frames)
+        const max_frames: u64 = 48000 * 30;
+        var total_read: u64 = 0;
+
+        while (total_read < max_frames) {
+            var frames_read: u64 = 0;
+            if (c.ma.ma_decoder_read_pcm_frames(&decoder, &buf, frames_per_read, &frames_read) != c.ma.MA_SUCCESS) break;
+            if (frames_read == 0) break;
+
+            const samples = buf[0 .. frames_read * 2];
+            for (samples) |sample| {
+                const abs = @abs(sample);
+                if (abs > peak) peak = abs;
+            }
+            total_read += frames_read;
+        }
+
+        if (peak < 0.001) return 1.0; // silence
+        if (peak >= target_peak) return target_peak / peak;
+        return 1.0; // already quieter than target
     }
 
     fn cancelScheduled(self: *Player) void {
